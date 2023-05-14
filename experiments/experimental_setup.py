@@ -1,6 +1,5 @@
 import sys
 
-
 from sklearn.compose import ColumnTransformer
 from sklearn.datasets import fetch_openml
 from sklearn.ensemble import GradientBoostingRegressor
@@ -10,12 +9,15 @@ from sklearn.metrics import accuracy_score, mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import  MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler
 
 # Common imports
+import openml
 import numpy as np
 import pandas as pd
-from sklearn.svm import SVR
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVR, LinearSVC
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.tree import DecisionTreeRegressor
 
 
@@ -99,6 +101,28 @@ def get_datasets_curve(training_size, X_train_split, y_train_split, X_test_split
     return X_train_k, y_train_k, X_test_k, y_test_k
 
 
+def get_dataset(openmlid):
+        ds = openml.datasets.get_dataset(openmlid)
+        df = ds.get_data()[0]
+
+        # prepare label column as numpy array
+        print(f"Read in data frame. Size is {len(df)} x {len(df.columns)}.")
+        cat_attributes = list(df.select_dtypes(include=['category', 'object', 'bool']))
+        X = pd.get_dummies(df, columns=cat_attributes, dtype=int)
+
+        y = np.array(df[ds.default_target_attribute].values)
+        if y.dtype != int:
+            y_int = np.zeros(len(y)).astype(int)
+            vals = np.unique(y)
+            for i, val in enumerate(vals):
+                mask = y == val
+                y_int[mask] = i
+            y = pd.Series(y_int)
+
+        print(f"Data is of shape {X.shape}.")
+        return X, y
+
+
 class Experiment:
     """
     A class for learning curve experiments, which runs each dataset against each learner and generate learning
@@ -157,7 +181,7 @@ class Experiment:
 
         return full_pipeline
 
-    def __evaluate_learner(self, openmlid, dataset, og_learner, hyperparameters):
+    def __evaluate_learner(self, openmlid, X, y, og_learner, hyperparameters):
         """
         Helper function to evaluate a particular dataset on a particular learner, with or without tuning
         :param openmlid: the openmlid of the dataset
@@ -167,12 +191,6 @@ class Experiment:
         :return: a table containing 1. learner name, 2. openmlid, 3. training_size, 4. labels,
         5. predictions, 6. performance
         """
-        X, y = dataset["data"], dataset["target"]
-
-        # Do one-hot encoding for categorical attributes
-        cat_attributes = list(X.select_dtypes(include=['category', 'object']))
-        X = pd.get_dummies(X, columns=cat_attributes)
-
         splits = split_kfold(X, y, self.n_splits, self.random_state)
         prediction_table = []
 
@@ -228,11 +246,11 @@ class Experiment:
 
         for openmlid in self.datasets:
             results = []
-            dataset = fetch_openml(data_id=openmlid, as_frame=True)
+            X, y = get_dataset(openmlid)  # fetch_openml(data_id=openmlid, as_frame=True)
             for learner_index in range(0, len(self.learners)):
                 learner = self.learners[learner_index]
                 hyperparameters = self.tuning_params[learner_index]
-                results = results + self.__evaluate_learner(openmlid, dataset, learner, hyperparameters)
+                results = results + self.__evaluate_learner(openmlid, X, y, learner, hyperparameters)
                 print(str(openmlid) + ' trained on ' + str(learner) + ' done')
             df_results = pd.DataFrame(results,
                                       columns=['learner', 'openmlid', 'size_train', 'size_test', 'labels_train',
@@ -240,6 +258,7 @@ class Experiment:
                                                'train_' + self.performance_metric.__name__,
                                                'test_' + self.performance_metric.__name__])
             df_results.to_pickle('../data/experiment/' + str(openmlid) + '_results.gz')
+
 
 if __name__ == '__main__':
     # Regression datasets
@@ -254,15 +273,15 @@ if __name__ == '__main__':
     house_8L = 218
     wind = 503
 
-    datasets = [diamonds, us_crime, houses, abalone, cpu_small, kin8nm, sulfur, elevators, house_8L, wind]
-
+    datasets = [11]  # diamonds, us_crime, houses, abalone, cpu_small, kin8nm, sulfur, elevators, house_8L, wind]
 
     # Number of splits
     n_splits = 25
 
     # Learners
-    learners = [SGDRegressor(max_iter=100000), LinearRegression(), DecisionTreeRegressor(),
-                GradientBoostingRegressor(), SVR()]
+    learners = [LinearDiscriminantAnalysis()]
+    # SGDRegressor(max_iter=100000), , DecisionTreeRegressor(),
+    #         GradientBoostingRegressor(), SVR()]
 
     # Create a new instance of an experiment
     e = Experiment(datasets, learners, performance_metric=mean_squared_error, n_splits=n_splits)
