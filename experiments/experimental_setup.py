@@ -10,13 +10,13 @@ from sklearn.model_selection import KFold
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.svm import LinearSVC
 
 # Common imports
 import openml
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVR, LinearSVC
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.tree import DecisionTreeRegressor
 
@@ -104,6 +104,8 @@ def get_datasets_curve(training_size, X_train_split, y_train_split, X_test_split
 def get_dataset(openmlid):
         ds = openml.datasets.get_dataset(openmlid)
         df = ds.get_data()[0]
+        # Shuffle
+        df = df.sample(frac=1)
 
         # prepare label column as numpy array
         print(f"Read in data frame. Size is {len(df)} x {len(df.columns)}.")
@@ -233,9 +235,20 @@ class Experiment:
                 predictions_test = learner.predict(X_test_k)
                 performance_test = self.performance_metric(y_test_k, predictions_test)
 
+                # Potentially remember the learner and choose best learner out of all
                 prediction_table.append((og_learner.__class__.__name__, openmlid, size_train, size_test,
+                                         0, 0,
                                          y_train_k, predictions_train, y_test_k, predictions_test, performance_train,
                                          performance_test))
+            # for the best learner fit again and test again
+            # learner.fit(X_train_split, y_train_split)
+            # predictions_train = learner.predict(X_train_split)
+            # performance_train = self.performance_metric(y_train_split, performance_train)
+            #
+            # predictions_test = learner.predict(X_test_split)
+            # performance_test = self.performance_metric(y_test_split, predictions_test)
+
+
 
         return prediction_table
 
@@ -246,17 +259,18 @@ class Experiment:
 
         for openmlid in self.datasets:
             results = []
-            X, y = get_dataset(openmlid)  # fetch_openml(data_id=openmlid, as_frame=True)
+            X, y = get_dataset(openmlid)
             for learner_index in range(0, len(self.learners)):
                 learner = self.learners[learner_index]
                 hyperparameters = self.tuning_params[learner_index]
                 results = results + self.__evaluate_learner(openmlid, X, y, learner, hyperparameters)
                 print(str(openmlid) + ' trained on ' + str(learner) + ' done')
             df_results = pd.DataFrame(results,
-                                      columns=['learner', 'openmlid', 'size_train', 'size_test', 'labels_train',
+                                      columns=['learner', 'openmlid', 'size_train', 'size_test',
+                                               'outer_seed', 'inner_seed', 'labels_train',
                                                'predictions_train', 'labels_test', 'prediction_test',
                                                'train_' + self.performance_metric.__name__,
-                                               'test_' + self.performance_metric.__name__])
+                                               'score_valid'])
             df_results.to_pickle('../data/experiment/' + str(openmlid) + '_results.gz')
 
 
@@ -273,13 +287,13 @@ if __name__ == '__main__':
     house_8L = 218
     wind = 503
 
-    datasets = [11]  # diamonds, us_crime, houses, abalone, cpu_small, kin8nm, sulfur, elevators, house_8L, wind]
+    datasets = [3]  # diamonds, us_crime, houses, abalone, cpu_small, kin8nm, sulfur, elevators, house_8L, wind]
 
     # Number of splits
     n_splits = 25
 
     # Learners
-    learners = [LinearDiscriminantAnalysis()]
+    learners = [LinearSVC()]
     # SGDRegressor(max_iter=100000), , DecisionTreeRegressor(),
     #         GradientBoostingRegressor(), SVR()]
 
