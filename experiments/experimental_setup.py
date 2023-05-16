@@ -1,5 +1,6 @@
 import sys
 
+import sklearn
 from sklearn.compose import ColumnTransformer
 from sklearn.datasets import fetch_openml
 from sklearn.ensemble import GradientBoostingRegressor
@@ -19,6 +20,18 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.tree import DecisionTreeRegressor
+
+
+def get_outer_split(X, y, seed):
+    return sklearn.model_selection.train_test_split(X, y, train_size=0.9, random_state=seed, stratify=y)
+
+
+def get_inner_split(X, y, outer_seed, inner_seed):
+    X_learn, X_test, y_learn, y_test = get_outer_split(X, y, outer_seed)
+    X_train, X_valid, y_train, y_valid = sklearn.model_selection.train_test_split(X_learn, y_learn, train_size=0.9,
+                                                                                  random_state=inner_seed,
+                                                                                  stratify=y_learn)
+    return X_train, X_valid, X_test, y_train, y_valid, y_test
 
 
 def all_elems_equal(s):
@@ -102,27 +115,28 @@ def get_datasets_curve(training_size, X_train_split, y_train_split, X_test_split
 
 
 def get_dataset(openmlid):
-        ds = openml.datasets.get_dataset(openmlid)
-        df = ds.get_data()[0]
-        # Shuffle
-        df = df.sample(frac=1)
+    ds = openml.datasets.get_dataset(openmlid)
+    df = ds.get_data()[0]
+    # Shuffle
+    df = df.sample(frac=1)
 
-        # prepare label column as numpy array
-        print(f"Read in data frame. Size is {len(df)} x {len(df.columns)}.")
-        cat_attributes = list(df.select_dtypes(include=['category', 'object', 'bool']))
-        X = pd.get_dummies(df, columns=cat_attributes, dtype=int)
+    y = np.array(df[ds.default_target_attribute].values)
+    # prepare label column as numpy array
+    print(f"Read in data frame. Size is {len(df)} x {len(df.columns)}.")
+    df = df.drop(columns=[ds.default_target_attribute])
+    cat_attributes = list(df.select_dtypes(include=['category', 'object', 'bool']))
+    X = pd.get_dummies(df, columns=cat_attributes, dtype=int)
 
-        y = np.array(df[ds.default_target_attribute].values)
-        if y.dtype != int:
-            y_int = np.zeros(len(y)).astype(int)
-            vals = np.unique(y)
-            for i, val in enumerate(vals):
-                mask = y == val
-                y_int[mask] = i
-            y = pd.Series(y_int)
+    if y.dtype != int:
+        y_int = np.zeros(len(y)).astype(int)
+        vals = np.unique(y)
+        for i, val in enumerate(vals):
+            mask = y == val
+            y_int[mask] = i
+        y = pd.Series(y_int)
 
-        print(f"Data is of shape {X.shape}.")
-        return X, y
+    print(f"Data is of shape {X.shape}.")
+    return X, y
 
 
 class Experiment:
@@ -183,72 +197,34 @@ class Experiment:
 
         return full_pipeline
 
-    def __evaluate_learner(self, openmlid, X, y, og_learner, hyperparameters):
-        """
-        Helper function to evaluate a particular dataset on a particular learner, with or without tuning
-        :param openmlid: the openmlid of the dataset
-        :param dataset: the fetched dataset from OpenML
-        :param og_learner: the learner the dataset is to be evaluated on
-        :param hyperparameters: the distribution or grid of hyperparameters used for tuning
-        :return: a table containing 1. learner name, 2. openmlid, 3. training_size, 4. labels,
-        5. predictions, 6. performance
-        """
-        splits = split_kfold(X, y, self.n_splits, self.random_state)
+    def __evaluate(self, openmlid, X, y, og_learner):
+        file = '../lcdb-orig/3-and-accuracy.csv'
+        config = pd.read_csv(file)
+
         prediction_table = []
 
-        for split in splits:
+        for i, row in config.iterrows():
+            size_train = row['size_train']  # anchor
+            size_test = row['size_test']
+            outer_seed = row['outer_seed']
+            inner_seed = row['inner_seed']
+            X_train, X_valid, X_test, y_train, y_valid, y_test = get_inner_split(X, y, outer_seed, inner_seed)
+            X_train = X_train[:size_train]
+            y_train = y_train[:size_train]
 
-            X_train_split, y_train_split, X_test_split, y_test_split = split
+            learner = clone(og_learner)
+            learner.fit(X_train, y_train)
 
-            # Preprocess data
-            preprocessor = self.__preprocess_data(X_train_split)
-            X_train_split = preprocessor.transform(X_train_split)
-            X_test_split = preprocessor.transform(X_test_split)
-            y_train_split = y_train_split.to_numpy()
-            y_test_split = y_test_split.to_numpy()
+            y_hat_train = learner.predict(X_train)
+            y_hat_valid = learner.predict(X_valid)
+            y_hat_test = learner.predict(X_test)
 
-            schedule = get_schedule(len(y_train_split), self.schedule_function, 16)
+            accuracy_train = sklearn.metrics.accuracy_score(y_train, y_hat_train)
+            accuracy_valid = sklearn.metrics.accuracy_score(y_valid, y_hat_valid)
+            accuracy_test = sklearn.metrics.accuracy_score(y_test, y_hat_test)
 
-            for training_size in schedule:
-
-                learner = clone(og_learner)
-                X_train_k, y_train_k, X_test_k, y_test_k = \
-                    get_datasets_curve(training_size, X_train_split, y_train_split, X_test_split, y_test_split)
-
-                size_train = len(y_train_k)
-                size_test = len(y_test_k)
-
-                if hyperparameters:
-                    param_search = self.tuning_strategy(learner, hyperparameters, n_jobs=-1,
-                                                        cv=KFold(n_splits=5, random_state=self.random_state, shuffle=True),
-                                                        error_score="raise")
-
-                    param_search.fit(X_train_k, y_train_k)
-
-                    learner = param_search.best_estimator_
-                else:
-                    learner.fit(X_train_k, y_train_k)
-
-                predictions_train = learner.predict(X_train_k)
-                performance_train = self.performance_metric(y_train_k, predictions_train)
-
-                predictions_test = learner.predict(X_test_k)
-                performance_test = self.performance_metric(y_test_k, predictions_test)
-
-                # Potentially remember the learner and choose best learner out of all
-                prediction_table.append((og_learner.__class__.__name__, openmlid, size_train, size_test,
-                                         0, 0,
-                                         y_train_k, predictions_train, y_test_k, predictions_test, performance_train,
-                                         performance_test))
-            # for the best learner fit again and test again
-            # learner.fit(X_train_split, y_train_split)
-            # predictions_train = learner.predict(X_train_split)
-            # performance_train = self.performance_metric(y_train_split, performance_train)
-            #
-            # predictions_test = learner.predict(X_test_split)
-            # performance_test = self.performance_metric(y_test_split, predictions_test)
-
-
+            prediction_table.append((og_learner.__class__.__name__, openmlid, size_train, size_test,
+                                     outer_seed, inner_seed, accuracy_train, accuracy_valid, accuracy_test))
 
         return prediction_table
 
@@ -263,14 +239,11 @@ class Experiment:
             for learner_index in range(0, len(self.learners)):
                 learner = self.learners[learner_index]
                 hyperparameters = self.tuning_params[learner_index]
-                results = results + self.__evaluate_learner(openmlid, X, y, learner, hyperparameters)
+                results = results + self.__evaluate(openmlid, X, y, learner)
                 print(str(openmlid) + ' trained on ' + str(learner) + ' done')
             df_results = pd.DataFrame(results,
                                       columns=['learner', 'openmlid', 'size_train', 'size_test',
-                                               'outer_seed', 'inner_seed', 'labels_train',
-                                               'predictions_train', 'labels_test', 'prediction_test',
-                                               'train_' + self.performance_metric.__name__,
-                                               'score_valid'])
+                                               'outer_seed', 'inner_seed', 'score_train', 'score_valid', 'score_test'])
             df_results.to_pickle('../data/experiment/' + str(openmlid) + '_results.gz')
 
 
