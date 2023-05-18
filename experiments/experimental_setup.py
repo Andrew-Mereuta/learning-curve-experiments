@@ -12,6 +12,7 @@ from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.svm import LinearSVC
+from sklearn.decomposition import PCA
 
 # Common imports
 import openml
@@ -118,7 +119,7 @@ def get_dataset(openmlid):
     ds = openml.datasets.get_dataset(openmlid)
     df = ds.get_data()[0]
     # Shuffle
-    df = df.sample(frac=1)
+    df = df.sample(frac=1, random_state=42)
 
     y = np.array(df[ds.default_target_attribute].values)
     # prepare label column as numpy array
@@ -126,6 +127,9 @@ def get_dataset(openmlid):
     df = df.drop(columns=[ds.default_target_attribute])
     cat_attributes = list(df.select_dtypes(include=['category', 'object', 'bool']))
     X = pd.get_dummies(df, columns=cat_attributes, dtype=int)
+
+    # pca = PCA(n_components=0.5)
+    # X = pca.fit_transform(X)
 
     if y.dtype != int:
         y_int = np.zeros(len(y)).astype(int)
