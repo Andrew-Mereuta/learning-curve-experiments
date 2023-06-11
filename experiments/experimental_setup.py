@@ -11,16 +11,23 @@ from sklearn.model_selection import KFold
 from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.svm import LinearSVC
+from sklearn.svm import LinearSVC, SVC
 from sklearn.decomposition import PCA
 
+
 # Common imports
+import os
 import openml
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import LogisticRegression, PassiveAggressiveClassifier, Perceptron, RidgeClassifier, \
+    SGDClassifier
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
+from sklearn.naive_bayes import BernoulliNB, MultinomialNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.tree import DecisionTreeClassifier, ExtraTreeClassifier
 
 
 def get_outer_split(X, y, seed):
@@ -115,21 +122,27 @@ def get_datasets_curve(training_size, X_train_split, y_train_split, X_test_split
     return X_train_k, y_train_k, X_test_k, y_test_k
 
 
-def get_dataset(openmlid):
-    ds = openml.datasets.get_dataset(openmlid)
+def get_dataset(openmlid, n_components=1.0):
+    ds = openml.datasets.get_dataset(str(openmlid))
     df = ds.get_data()[0]
     # Shuffle
     df = df.sample(frac=1, random_state=42)
 
     y = np.array(df[ds.default_target_attribute].values)
     # prepare label column as numpy array
-    print(f"Read in data frame. Size is {len(df)} x {len(df.columns)}.")
+    print(f"Read in data frame of openmlid: {openmlid}. Size is {len(df)} x {len(df.columns)}.")
     df = df.drop(columns=[ds.default_target_attribute])
     cat_attributes = list(df.select_dtypes(include=['category', 'object', 'bool']))
     X = pd.get_dummies(df, columns=cat_attributes, dtype=int)
 
-    # pca = PCA(n_components=0.5)
-    # X = pca.fit_transform(X)
+    averages = X.mean()
+    # Replace NaN values with column-wise averages
+    X = X.fillna(averages)
+
+    print(f'Before pca: {X.shape}')
+    pca = PCA(n_components=n_components, random_state=42)
+    X = pca.fit_transform(X)
+    print(f'After pca: {X.shape}')
 
     if y.dtype != int:
         y_int = np.zeros(len(y)).astype(int)
@@ -150,7 +163,8 @@ class Experiment:
     all saved to a file called `experiment_results.gz`.
     """
 
-    def __init__(self, datasets, learners, tuning_params=None, tuning_strategy=None, n_splits=10,
+    def __init__(self, datasets, learner_by_name, principal_components, tuning_params=None, tuning_strategy=None,
+                 n_splits=10,
                  performance_metric=accuracy_score, schedule_function=sqrt_schedule_function, random_state=42):
         """
         Create a new class for experiments, which runs each dataset against each learner and generate learning curves
@@ -170,7 +184,8 @@ class Experiment:
         :param random_state: random seed
         """
         self.datasets: list[int] = datasets
-        self.learners: list = learners
+        self.learner_by_name = learner_by_name
+        self.principal_components = principal_components
         self.tuning_params = tuning_params
         self.tuning_strategy = tuning_strategy
         self.n_splits: int = n_splits
@@ -180,7 +195,7 @@ class Experiment:
 
         # If either the tuning_params or tuning_strategy is None/empty then create an array of None for tuning params
         if tuning_params is None or tuning_strategy is None or len(tuning_params) == 0:
-            self.tuning_params = [None] * len(learners)
+            self.tuning_params = [None] * len(learner_by_name)
 
     def __preprocess_data(self, df):
         df_num = df.select_dtypes(include=[np.number])
@@ -236,22 +251,85 @@ class Experiment:
         """
         Generate results for each dataset and for each learner and save it to "experiment_results.gz"
         """
+        database_accuracy = pd.read_csv('database-accuracy.csv')
+        all_openmlids = database_accuracy['openmlid'].unique()
 
-        for openmlid in self.datasets:
-            results = []
-            X, y = get_dataset(openmlid)
-            for learner_index in range(0, len(self.learners)):
-                learner = self.learners[learner_index]
-                hyperparameters = self.tuning_params[learner_index]
-                results = results + self.__evaluate(openmlid, X, y, learner)
-                print(str(openmlid) + ' trained on ' + str(learner) + ' done')
-            df_results = pd.DataFrame(results,
-                                      columns=['learner', 'openmlid', 'size_train', 'size_test',
-                                               'outer_seed', 'inner_seed', 'score_train', 'score_valid', 'score_test'])
-            df_results.to_pickle('../data/experiment/' + str(openmlid) + '_results.gz')
+        for openmlid in all_openmlids:
+            # if openmlid not in [44, 188, 41142, 1018, 40670, 41145]:
+            if openmlid == 41142:
+                df_openmlid = database_accuracy.query('openmlid == ' + str(openmlid))
+                all_learners = df_openmlid['learner'].unique()
+                for learner_name in all_learners:
+                    if learner_name in self.learner_by_name.keys():
+                        og_learner = self.learner_by_name[learner_name]
+                        df_openmlid_by_learner = df_openmlid.query(f"learner == '{learner_name}'")
+                        for principal_component in self.principal_components:
+                            self.__do_experiment(openmlid, learner_name, og_learner, df_openmlid_by_learner,
+                                                 principal_component)
+
+
+    def __do_experiment(self, openmlid, learner_name, og_learner, df_openmlid_by_learner, principal_component):
+        X, y = get_dataset(openmlid, n_components=principal_component)
+        print(f"Train for learner: {learner_name}")
+        prediction_table = []
+
+        for i, row in df_openmlid_by_learner.iterrows():
+            size_train = row['size_train']  # anchor
+            size_test = row['size_test']
+            outer_seed = row['outer_seed']
+            inner_seed = row['inner_seed']
+            X_train, X_valid, X_test, y_train, y_valid, y_test = get_inner_split(X, y, outer_seed, inner_seed)
+            X_train = X_train[:size_train]
+            y_train = y_train[:size_train]
+
+            learner = clone(og_learner)
+            learner.fit(X_train, y_train)
+
+            y_hat_train = learner.predict(X_train)
+            y_hat_valid = learner.predict(X_valid)
+            y_hat_test = learner.predict(X_test)
+
+            accuracy_train = sklearn.metrics.accuracy_score(y_train, y_hat_train)
+            accuracy_valid = sklearn.metrics.accuracy_score(y_valid, y_hat_valid)
+            accuracy_test = sklearn.metrics.accuracy_score(y_test, y_hat_test)
+
+            prediction_table.append((learner_name, openmlid, size_train, size_test,
+                                     outer_seed, inner_seed, accuracy_train, accuracy_valid, accuracy_test))
+
+        df_results = pd.DataFrame(prediction_table,
+                                  columns=['learner', 'openmlid', 'size_train', 'size_test',
+                                           'outer_seed', 'inner_seed', 'score_train', 'score_valid', 'score_test'])
+        save_dir = '../data/experiment/' + str(openmlid) + '/' + str(learner_name) + '/'
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        df_results.to_csv('../data/experiment/' + str(openmlid) + '/' + str(learner_name) + '/' + str(principal_component) + '_results.csv', index=False)
 
 
 if __name__ == '__main__':
+    learner_by_name = {
+        # 'SVC_linear': LinearSVC(random_state=54),
+        # 'SVC_poly': SVC(random_state=54, kernel='poly'),
+        # 'SVC_rbf': SVC(random_state=54, kernel='rbf'),
+        # 'SVC_sigmoid': SVC(random_state=54, kernel='sigmoid'),
+        # 'sklearn.discriminant_analysis.LinearDiscriminantAnalysis': LinearDiscriminantAnalysis(),
+        # 'sklearn.discriminant_analysis.QuadraticDiscriminantAnalysis': QuadraticDiscriminantAnalysis(),
+        # 'sklearn.ensemble.ExtraTreesClassifier': ExtraTreesClassifier(random_state=54),
+        'sklearn.ensemble.GradientBoostingClassifier': GradientBoostingClassifier(random_state=54),
+        'sklearn.ensemble.RandomForestClassifier': RandomForestClassifier(random_state=54),
+        'sklearn.linear_model.LogisticRegression': LogisticRegression(random_state=54),
+        'sklearn.linear_model.PassiveAggressiveClassifier': PassiveAggressiveClassifier(random_state=54),
+        'sklearn.linear_model.Perceptron': Perceptron(random_state=54),
+        'sklearn.linear_model.RidgeClassifier': RidgeClassifier(random_state=54),
+        'sklearn.linear_model.SGDClassifier': SGDClassifier(random_state=54),
+        'sklearn.naive_bayes.BernoulliNB': BernoulliNB(),
+        # 'sklearn.naive_bayes.MultinomialNB': MultinomialNB(),
+        'sklearn.neighbors.KNeighborsClassifier': KNeighborsClassifier(),
+        'sklearn.neural_network.MLPClassifier': MLPClassifier(random_state=54),
+        'sklearn.tree.DecisionTreeClassifier': DecisionTreeClassifier(random_state=54),
+        'sklearn.tree.ExtraTreeClassifier': ExtraTreeClassifier(random_state=54)
+    }
+    principal_components = [0.9, 0.7, 0.5]
+
     # Regression datasets
     diamonds = 42225
     us_crime = 315
@@ -264,18 +342,19 @@ if __name__ == '__main__':
     house_8L = 218
     wind = 503
 
-    datasets = [3]  # diamonds, us_crime, houses, abalone, cpu_small, kin8nm, sulfur, elevators, house_8L, wind]
+    datasets = []  # diamonds, us_crime, houses, abalone, cpu_small, kin8nm, sulfur, elevators, house_8L, wind]
 
     # Number of splits
     n_splits = 25
 
     # Learners
-    learners = [LinearSVC()]
+    # learners = [LinearSVC()]
     # SGDRegressor(max_iter=100000), , DecisionTreeRegressor(),
     #         GradientBoostingRegressor(), SVR()]
 
     # Create a new instance of an experiment
-    e = Experiment(datasets, learners, performance_metric=mean_squared_error, n_splits=n_splits)
+    e = Experiment(datasets, learner_by_name, principal_components, performance_metric=mean_squared_error,
+                   n_splits=n_splits)
 
     print("Running experiments...")
     e.run_all_experiments()

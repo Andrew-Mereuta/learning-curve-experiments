@@ -1,6 +1,6 @@
-import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 def get_XY2(row):
@@ -139,48 +139,43 @@ def plot_prediction_smooth2(row, label=None):
     plt.legend()
 
 
-# Starts here
-# plt.figure(figsize=(8, 8))
-
 openmlid = 3
-pca = 50
+file_name = '/' + str(openmlid) + '_plot_summary.gz'
+base_dir = '../lcdb-orig/openmlid_' + str(openmlid)
+pca_dir = base_dir + '_pca_'
+pca_percentages = [90, 70, 50]
 
-a_f = str(openmlid) + '_anchors_scores_example.gz'
-e_f = str(openmlid) + '_extrapolations.gz'
+default_summary = pd.read_pickle(base_dir + file_name)
+max_anchor = -np.sort(-np.array(default_summary['max_anchor_seen']))[0]
+summary = default_summary.query('max_anchor_seen == ' + str(max_anchor)).iloc[0, :]
 
-dir = '../lcdb-orig/openmlid_' + str(openmlid) + '/'
-# dir = '../lcdb-orig/openmlid_' + str(openmlid) + '_pca_' + str(pca) + '/'
+summaries = {100: summary}
 
+for pca_percentage in pca_percentages:
+    directory = pca_dir + str(pca_percentage) + file_name
+    pca_summary = pd.read_pickle(directory)
+    max_anchor = -np.sort(-np.array(pca_summary['max_anchor_seen']))[0]
+    summaries[pca_percentage] = pca_summary.query('max_anchor_seen == ' + str(max_anchor)).iloc[0, :]
 
-line = pd.read_pickle(dir + a_f)
-rows = pd.read_pickle(dir + e_f)
+test_label = 'test_anchors_'
+train_label = 'train_anchors_'
+curve_label = 'curve_label_'
+for pca_percentage in summaries:
+    s = summaries[pca_percentage]
+    plot_data2(s, label=(test_label + str(pca_percentage)))
+    plot_trn_data2(s, label=(train_label + str(pca_percentage)))
+    plot_prediction2(s, label=(curve_label + str(pca_percentage) + '_' + s.curve_model))
+    plot_prediction_smooth2(s, label=(curve_label + str(pca_percentage) + '_' + s.curve_model))
 
-anchor_prediction_array = np.tile(line['anchor_prediction'].values[0], (len(rows), 1))
-rows['anchor_prediction'] = anchor_prediction_array.tolist()
+plt.ylim(0, 0.4)
+plt.show()
 
-score_array = np.tile(line['score'].values[0], (len(rows), 1))
-rows['score'] = score_array.tolist()
+np.set_printoptions(suppress=True)
 
-row = rows.iloc[10, :]
+for pca_percentage in summaries:
+    s = summaries[pca_percentage]
+    betas = np.array(s['beta'])
+    print(f"{pca_percentage}: {betas}")
 
-rows.to_pickle(dir + str(openmlid) + '_plot_summary.gz')
+# print(summary)
 
-# plots all the points on the curve (red stars)
-# plot_data2(row)
-
-# plots the points used for training only (blue dots)
-# plot_trn_data2(row)
-
-# plot the curve fit from the row of the dataframe (dotted)
-# plot_prediction2(row)
-
-# plot the curve fit using the beta parameters in the dataframe (line)
-# this plot is smoother since we can predict any x-value
-# this curve should overlap with the curve plotted previously
-# plot_prediction_smooth2(row)
-
-# show the plot
-# plt.show()
-
-# show the information of the row
-print(row)
