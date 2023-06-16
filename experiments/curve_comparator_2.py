@@ -274,17 +274,20 @@ for openmlid in functions_50.keys():
     for curve in curve_mse50.keys():
         print(f"\t{curve}")
         betas50 = np.mean(np.array(curve_beta50[curve]), axis=0)
-        print(f"\t\t50: mse: {round(curve_mse50[curve], 4)}; {betas50}")
+        std50 = np.std(np.array(curve_beta50[curve]), axis=0)
+        print(f"\t\t50: mse: {round(curve_mse50[curve], 4)}; {betas50}; {std50}")
 
     for curve in curve_mse70.keys():
         print(f"\t{curve}")
         betas70 = np.mean(np.array(curve_beta70[curve]), axis=0)
-        print(f"\t\t70: mse: {round(curve_mse70[curve], 4)}; {betas70}")
+        std70 = np.std(np.array(curve_beta70[curve]), axis=0)
+        print(f"\t\t70: mse: {round(curve_mse70[curve], 4)}; {betas70}; {std70}")
 
     for curve in curve_mse90.keys():
         print(f"\t{curve}")
         betas90 = np.mean(np.array(curve_beta90[curve]), axis=0)
-        print(f"\t\t90: mse: {round(curve_mse90[curve], 4)}; {betas90}")
+        std90 = np.std(np.array(curve_beta90[curve]), axis=0)
+        print(f"\t\t90: mse: {round(curve_mse90[curve], 4)}; {betas90}; {std90}")
 
     # for curve in curve_types:
     #     print(f"\t{curve}")
